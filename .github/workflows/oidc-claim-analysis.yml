@@ -1,4 +1,4 @@
-name: oidc-test
+name: oidc-simple
 on:
   push:
     branches: [main]
@@ -7,71 +7,44 @@ permissions:
   id-token: write
   contents: read
 jobs:
-  test-oidc:
+  oidc:
     runs-on: ubuntu-latest
     steps:
-      - name: Get OIDC token and decode claims
-        run: |
-          echo "GITHUB_WORKFLOW_REF=$GITHUB_WORKFLOW_REF"
-          echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
-          echo "GITHUB_ACTOR=$GITHUB_ACTOR"
-          echo ""
-          if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
-            echo "ERROR: No OIDC URL available"
-            exit 1
-          fi
-          OIDC_URL="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com"
-          RESP=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "$OIDC_URL")
-          echo "$RESP" > /tmp/oidc_resp.json
-          python3 -c "
-import json, base64, sys
-with open('/tmp/oidc_resp.json') as f:
-    data = json.load(f)
-jwt = data.get('value','')
-if not jwt:
-    print('ERROR: No JWT value')
-    print(data)
-    sys.exit(1)
-parts = jwt.split('.')
-payload = parts[1]
-padding = 4 - len(payload) % 4
-if padding != 4:
-    payload += '=' * padding
-decoded = base64.urlsafe_b64decode(payload)
-claims = json.loads(decoded)
-print('=== OIDC CLAIMS (audience=sts.amazonaws.com) ===')
-for k,v in sorted(claims.items()):
-    print(f'  {k}: {v}')
-print()
-print(f'KEY: job_workflow_ref = {claims.get("job_workflow_ref")}')
-print(f'KEY: workflow_ref = {claims.get("workflow_ref")}')
-print(f'KEY: repository = {claims.get("repository")}')
-print(f'KEY: repository_owner = {claims.get("repository_owner")}')
-print(f'KEY: sub = {claims.get("sub")}')
-"
-      - name: Test multiple audiences
-        run: |
-          for AUD in "api://AzureADTokenExchange" "https://github.com/EloboAI" "sigstore"; do
-            echo "--- Audience: $AUD ---"
-            OIDC_URL="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$AUD"
-            RESP=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "$OIDC_URL")
-            echo "$RESP" > /tmp/oidc_aud.json
-            python3 -c "
-import json, base64
-with open('/tmp/oidc_aud.json') as f:
-    data = json.load(f)
-jwt = data.get('value','')
-if not jwt:
-    print(f'  ERROR: {data}')
-else:
-    parts = jwt.split('.')
-    payload = parts[1] + '=' * (4 - len(parts[1]) % 4)
-    decoded = base64.urlsafe_b64decode(payload)
-    claims = json.loads(decoded)
-    print(f'  aud: {claims.get("aud")}')
-    print(f'  sub: {claims.get("sub")}')
-    print(f'  job_workflow_ref: {claims.get("job_workflow_ref")}')
-    print(f'  iss: {claims.get("iss")}')
-"
-            echo ""
-          done
+      - name: Get OIDC
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('sts.amazonaws.com');
+            const parts = token.split('.');
+            const payload = Buffer.from(parts[1], 'base64url').toString();
+            const claims = JSON.parse(payload);
+            console.log('=== OIDC CLAIMS (audience=sts.amazonaws.com) ===');
+            Object.entries(claims).sort().forEach(([k,v]) => console.log(`  ${k}: ${v}`));
+            console.log('');
+            console.log(`KEY: job_workflow_ref = ${claims.job_workflow_ref}`);
+            console.log(`KEY: workflow_ref = ${claims.workflow_ref}`);
+            console.log(`KEY: repository = ${claims.repository}`);
+            console.log(`KEY: sub = ${claims.sub}`);
+            console.log(`KEY: aud = ${claims.aud}`);
+
+      - name: Multiple audiences
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const audiences = ['api://AzureADTokenExchange', 'https://github.com/EloboAI', 'sigstore', 'https://github.com/github'];
+            for (const aud of audiences) {
+              console.log(`--- Audience: ${aud} ---`);
+              try {
+                const token = await core.getIDToken(aud);
+                const payload = Buffer.from(token.split('.')[1], 'base64url').toString();
+                const claims = JSON.parse(payload);
+                console.log(`  aud: ${claims.aud}`);
+                console.log(`  sub: ${claims.sub}`);
+                console.log(`  job_workflow_ref: ${claims.job_workflow_ref}`);
+                console.log(`  repository: ${claims.repository}`);
+                console.log(`  iss: ${claims.iss}`);
+              } catch(e) {
+                console.log(`  ERROR: ${e.message}`);
+              }
+              console.log('');
+            }
