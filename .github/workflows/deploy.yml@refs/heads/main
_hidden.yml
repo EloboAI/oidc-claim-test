@@ -1,0 +1,37 @@
+name: exact-match-test
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            console.log('=== EXACT MATCH OIDC TEST ===');
+            console.log('GITHUB_WORKFLOW_REF:', JSON.stringify(process.env.GITHUB_WORKFLOW_REF));
+            try {
+              const token = await core.getIDToken('sts.amazonaws.com');
+              const parts = token.split('.');
+              const payload = Buffer.from(parts[1], 'base64url').toString();
+              const claims = JSON.parse(payload);
+              console.log('');
+              console.log('RAW job_workflow_ref:', JSON.stringify(claims.job_workflow_ref));
+              console.log('RAW workflow_ref:', JSON.stringify(claims.workflow_ref));
+              console.log('');
+              console.log('First line of job_workflow_ref:', claims.job_workflow_ref.split('\n')[0]);
+              console.log('');
+              const expected = 'EloboAI/oidc-claim-test/.github/workflows/deploy.yml@refs/heads/main';
+              const firstLine = claims.job_workflow_ref.split('\n')[0];
+              if (firstLine === expected) {
+                console.log('!!! CRITICAL: First line EXACTLY matches legitimate workflow ref !!!');
+                console.log('!!! A verifier splitting on newline would accept this as deploy.yml !!!');
+              }
+            } catch(e) {
+              console.log('Error:', e.message);
+            }
