@@ -1,64 +1,44 @@
-name: oidc-claim-analysis
+name: oidc-test
 on:
-  workflow_dispatch:
   push:
     branches: [main]
+  workflow_dispatch:
 permissions:
   id-token: write
   contents: read
 jobs:
-  claim-analysis:
+  test-oidc:
     runs-on: ubuntu-latest
     steps:
-      - name: Request OIDC with various audiences
+      - name: Get OIDC token
         run: |
-          echo "=== OIDC CLAIM ANALYSIS ==="
           echo "GITHUB_WORKFLOW_REF=$GITHUB_WORKFLOW_REF"
           echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
+          echo "GITHUB_ACTOR=$GITHUB_ACTOR"
           echo ""
-          
-          # Function to get and decode token
-          get_claims() {
-            local AUD="$1"
-            echo "--- Audience: $AUD ---"
-            OIDC_URL="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$AUD"
-            RESP=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "$OIDC_URL")
-            JWT=$(echo "$RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('value','ERROR: '+str(d)))" 2>&1)
-            if [[ "$JWT" == ERROR* ]]; then
-              echo "  $JWT"
-            else
-              echo "$JWT" | cut -d. -f2 | python3 -c "
-import base64,sys,json
+          if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
+            echo "ERROR: No OIDC URL available"
+            exit 1
+          fi
+          OIDC_URL="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com"
+          RESP=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "$OIDC_URL")
+          echo "Raw response (first 100): ${RESP:0:100}"
+          JWT=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('value','NO_VALUE'))")
+          if [ "$JWT" = "NO_VALUE" ]; then
+            echo "Failed to get JWT"
+            echo "$RESP"
+            exit 1
+          fi
+          echo ""
+          echo "=== OIDC CLAIMS ==="
+          echo "$JWT" | cut -d. -f2 | python3 << PYEOF
+import base64, sys, json
 data = sys.stdin.read().strip()
-decoded = base64.urlsafe_b64decode(data + '=' * (4 - len(data) % 4))
+padding = 4 - len(data) % 4
+if padding != 4:
+    data += "=" * padding
+decoded = base64.urlsafe_b64decode(data)
 claims = json.loads(decoded)
 for k,v in sorted(claims.items()):
-    print(f'  {k}: {v}')
-"
-            fi
-            echo ""
-          }
-          
-          # Test different audiences
-          get_claims "api://AzureADTokenExchange"
-          get_claims "sts.amazonaws.com"
-          get_claims "https://github.com/EloboAI"
-          get_claims "https://github.com/EloboAI/reusable-workflow-trust"
-          
-          # Critical test: request token with audience of another org
-          get_claims "https://github.com/github"
-          get_claims "sigstore"
-          
-          # Test: can we get a token that looks like it's from another repo?
-          get_claims "https://token.actions.githubusercontent.com"
-
-      - name: Check environment context
-        run: |
-          echo "=== ENVIRONMENT VARIABLES ==="
-          env | grep -i "GITHUB_" | sort
-          echo ""
-          echo "=== RUNNER INFO ==="
-          echo "RUNNER_NAME=$RUNNER_NAME"
-          echo "RUNNER_OS=$RUNNER_OS"
-          echo "RUNNER_ARCH=$RUNNER_ARCH"
-          echo "RUNNER_ENVIRONMENT=$RUNNER_ENVIRONMENT"
+    print(f"  {k}: {v}")
+PYEOF
